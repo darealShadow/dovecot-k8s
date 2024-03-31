@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: updconf
+  namespace: mailserver
+data:
+  config.sh: |
+    #!/bin/sh
+    name=$(sed "s/[^a-z-]//g" /modconf/hostname)
+    num=$(sed -r "s/[^0-9]//g" /modconf/hostname)
+    for i in `seq 0 $(($INST - 1))`
+    do
+      if [ $name$i = $HOSTNAME ]
+      then
+        continue
+      fi
+      repstring=$repstring"sync {@LB@"
+      repstring=$repstring"    default.rsyncssh,@LB@"
+      repstring=$repstring"    source = \"/mail\",@LB@"
+      repstring=$repstring"    host = \"$name$i.$SVC.$NS.$CLUSTER\",@LB@"
+      repstring=$repstring"    targetdir = \"/mail\",@LB@"
+      repstring=$repstring"    delay = 5,@LB@"
+      repstring=$repstring"    rsync = {@LB@"
+      repstring=$repstring"        verbose = true,@LB@"
+      repstring=$repstring"        inplace = true,@LB@"
+      repstring=$repstring"        _extra = {@LB@"
+      repstring=$repstring"            \"--info=progress2\"@LB@"
+      repstring=$repstring"        }@LB@"
+      repstring=$repstring"     },@LB@"
+      repstring=$repstring"     ssh = {@LB@"
+      repstring=$repstring"         identityFile = \"/root/.ssh/id_rsa\",@LB@"
+      #repstring=$repstring"         identityFile = \"home/vmail/.ssh/id_rsa\",@LB@"
+      repstring=$repstring"         options = {@LB@"
+      repstring=$repstring"             User = \"root\",@LB@"
+      #repstring=$repstring"             User = \"vmail\",@LB@"
+      repstring=$repstring"             StrictHostKeyChecking = \"no\",@LB@"
+      repstring=$repstring"             Compression = \"no\",@LB@"
+      repstring=$repstring"             Cipher = \"aes256-gcm@openssh.com\"@LB@"
+      repstring=$repstring"         },@LB@"
+      repstring=$repstring"         _extra = {@LB@"
+      repstring=$repstring"             \"-T\",@LB@"
+      repstring=$repstring"             \"-c\",@LB@"
+      repstring=$repstring"             \"aes256-gcm@openssh.com\"@LB@"
+      repstring=$repstring"         }@LB@"
+      repstring=$repstring"    }@LB@"
+      repstring=$repstring"}@LB@"
+    done
+    echo "$repstring" >> /modconf/lsyncd.lua
+    sed -i "s/@LB@/\n/g" /modconf/lsyncd.lua
