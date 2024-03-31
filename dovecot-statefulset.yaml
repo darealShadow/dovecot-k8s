@@ -1,0 +1,499 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dovecot
+  namespace: mailserver
+spec:
+  selector:
+    matchLabels:
+      app: dovecot
+      #role: dovecot
+  serviceName: dovecot
+  replicas: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+        namespace: mailserver
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: nfs-storage
+  #      selector:
+  #        matchLabels:
+  #          volume-name: storage
+  template:
+    metadata:
+      labels:
+        app: dovecot
+        #role: dovecot
+    spec:
+      initContainers:
+        #---------------- LSYNC CONFIG -----------------
+        - name: lsync-config
+          image: busybox
+          env:
+          - name: INST
+            value: "3"
+          - name: NS
+            value: "mailserver"
+          - name: SVC
+            value: "dovecot"
+          - name: CLUSTER
+            value: "svc.cluster.local"
+          command:
+            - '/bin/sh'
+          args:
+            - '-c'
+            - 'cp /modfiles/lsyncd.lua /modconf;
+              cp /modfiles/config.sh /modconf;
+              chmod +x /modconf/config.sh;
+              echo $HOSTNAME | tee /modconf/hostname;
+              name=$(sed "s/[^a-z-]//g" /modconf/hostname);
+              num=$(sed "s/[^0-9]//g" /modconf/hostname);
+              ./modconf/config.sh;
+              rm /modconf/hostname;'
+          volumeMounts:
+            - name: modconf
+              mountPath: /modconf
+            - name: updconf
+              mountPath: /modfiles/config.sh
+              subPath: config.sh
+            - name: basicconfig
+              mountPath: /modfiles/lsyncd.lua
+              subPath: lsyncd.lua
+              readOnly: true
+        #---------------- DOVECOT CONFIG -----------------
+        #- name: dhpem
+        #  image: alpine:latest
+        #  command:
+        #    - sh
+        #    - "-c"
+        #    - apk --no-cache add openssl && echo 'Generating dh.pem' && openssl dhparam 2048 > /mnt/dh.pem
+        #  volumeMounts:
+        #    - name: dhpem
+        #      mountPath: /mnt
+      containers:
+        #------------- HEALTHPROBE CONTAINER --------------
+        - name: healthz
+          image: k8s.gcr.io/exechealthz:1.0
+          args: ["-cmd=nslookup dovecot.mailserver.svc.cluster.local"]
+          ports:
+            - name: healthz
+              containerPort: 8080
+              protocol: TCP
+        #---------------- LSYNC CONTAINER -----------------
+        - name: lsync
+          image: quay.io/realshadow/lsyncd
+          imagePullPolicy: Always
+          env:
+          - name: INST
+            value: "3"
+          - name: KEYPATH
+            value: "/keys"
+          - name: NS
+            value: "mailserver"
+          - name: SVC
+            value: "dovecot"
+          - name: CLUSTER
+            value: "svc.cluster.local"
+          volumeMounts:
+            - name: storage
+              mountPath: /mail
+            - name: modconf
+              mountPath: /config/
+            - name: keyex
+              mountPath: /keys/
+            - name: tz-edmonton
+              mountPath: /etc/localtime
+          ports:
+            #- name: sync
+            #  containerPort: 9900
+            #  protocol: TCP
+            - name: ssh
+              containerPort: 22
+              protocol: TCP
+        #---------------- DOVECOT CONTAINER -----------------
+        - name: dovecot
+          image: quay.io/realshadow/dovecot:latest
+          imagePullPolicy: Always
+          readinessProbe:
+            tcpSocket:
+              #port: 587
+              port: 143
+            initialDelaySeconds: 60
+            periodSeconds: 60
+          livenessProbe:
+            tcpSocket:
+              #port: 587
+              port: 143
+            initialDelaySeconds: 60
+            periodSeconds: 60
+          volumeMounts:
+            - name: storage
+              mountPath: /mail
+            - name: dhpem
+            #  mountPath: /etc/dh.pem
+              mountPath: /mnt/dh2048.pem
+              subPath: dh2048.pem
+            - name: tls-secret
+              mountPath: /certs/
+              readOnly: true
+            - name: tz-edmonton
+              mountPath: /etc/localtime
+            #------------------MOUNTS CONFIG MAPS------------------
+            - name: dovecot-conf
+              mountPath: /etc/dovecot/dovecot.conf
+              subPath: dovecot.conf
+            - name: dovecot-dict-auth-conf-ext
+              mountPath: /etc/dovecot/dovecot-dict-auth.conf.ext
+              subPath: dovecot-dict-auth.conf.ext
+            - name: dovecot-dict-sql-conf-ext
+              mountPath: /etc/dovecot/dovecot-dict-sql.conf.ext
+              subPath: dovecot-dict-sql.conf.ext
+            - name: dovecot-ldap-conf-ext
+              mountPath: /etc/dovecot/dovecot-ldap.conf.ext
+              subPath: dovecot-ldap.conf.ext
+            - name: dovecot-oauth2-conf-ext
+              mountPath: /etc/dovecot/dovecot-oauth2.conf.ext
+              subPath: dovecot-oauth2.conf.ext
+            - name: dovecot-openssl-cnf
+              mountPath: /etc/dovecot/dovecot-openssl.cnf
+              subPath: dovecot-openssl.cnf
+            - name: dovecot-sql-conf-ext
+              mountPath: /etc/dovecot/dovecot-sql.conf.ext
+              subPath: dovecot-sql.conf.ext
+            - name: 10-auth-conf
+              mountPath: /etc/dovecot/conf.d/10-auth.conf
+              subPath: 10-auth.conf
+            - name: 10-director-conf
+              mountPath: /etc/dovecot/conf.d/10-director.conf
+              subPath: 10-director.conf
+            - name: 10-logging-conf
+              mountPath: /etc/dovecot/conf.d/10-logging.conf
+              subPath: 10-logging.conf
+            - name: 10-mail-conf
+              mountPath: /etc/dovecot/conf.d/10-mail.conf
+              subPath: 10-mail.conf
+            - name: 10-master-conf
+              mountPath: /etc/dovecot/conf.d/10-master.conf
+              subPath: 10-master.conf
+            - name: 10-metrics-conf
+              mountPath: /etc/dovecot/conf.d/10-metrics.conf
+              subPath: 10-metrics.conf
+            - name: 10-ssl-conf
+              mountPath: /etc/dovecot/conf.d/10-ssl.conf
+              subPath: 10-ssl.conf
+            - name: 15-lda-conf
+              mountPath: /etc/dovecot/conf.d/15-lda.conf
+              subPath: 15-lda.conf
+            - name: 15-mailboxes-conf
+              mountPath: /etc/dovecot/conf.d/15-mailboxes.conf
+              subPath: 15-mailboxes.conf
+            - name: 20-imap-conf
+              mountPath: /etc/doveoct/conf.d/20-imap.conf
+              subPath: 20-imap.conf
+            - name: 20-lmtp-conf
+              mountPath: /etc/dovecot/conf.d/20-lmtp.conf
+              subPath: 20-lmtp.conf
+            - name: 20-managesieve-conf
+              mountPath: /etc/dovecot/conf.d/20-managesieve.conf
+              subPath: 20-managesieve.conf
+            - name: 20-pop3-conf
+              mountPath: /etc/dovecot/conf.d/20-pop3.conf
+              subPath: 20-pop3.conf
+            - name: 20-submission-conf
+              mountPath: /etc/dovecot/conf.d/20-submission.conf
+              subPath: 20-submission.conf
+            - name: 90-acl-conf
+              mountPath: /etc/dovecot/conf.d/90-acl.conf
+              subPath: 90-acl.conf
+            - name: 90-plugin-conf
+              mountPath: /etc/dovecot/conf.d/90-plugin.conf
+              subPath: 90-plugin.conf
+            - name: 90-quota-conf
+              mountPath: /etc/dovecot/conf.d/90-quota.conf
+              subPath: 90-quota.conf
+            - name: 90-sieve-conf
+              mountPath: /etc/dovecot/conf.d/90-sieve.conf
+              subPath: 90-sieve.conf
+            - name: 90-sieve-extprograms-conf
+              mountPath: /etc/dovecot/conf.d/90-sieve-extprograms.conf
+              subPath: 90-sieve-extprograms.conf
+            #- name: auth-checkpassword-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-checkpassword.conf.ext
+            #  subPath: auth-checkpassword.conf.ext
+            #- name: auth-deny-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-deny.conf.ext
+            #  subPath: auth-deny.conf.ext
+            - name: auth-dict-conf-ext
+              mountPath: /etc/dovecot/conf.d/auth-dict.conf.ext
+              subPath: auth-dict.conf.ext
+            #- name: auth-ldap-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-ldap.conf.ext
+            #  subPath: auth-ldap.conf.ext
+            #- name: auth-master-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-master.conf.ext
+            #  subPath: auth-master.conf.ext
+            #- name: auth-passwdfile-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-passwdfile.conf.ext
+            #  subPath: auth-passwdfile.conf.ext
+            - name: auth-sql-conf-ext
+              mountPath: /etc/dovecot/conf.d/auth-sql.conf.ext
+              subPath: auth-sql.conf.ext
+            #- name: auth-static-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-static.conf.ext
+            #  subPath: auth-static.conf.ext
+            #- name: auth-system-conf-ext
+            #  mountPath: /etc/dovecot/conf.d/auth-system.conf.ext
+            #  subPath: auth-system.conf.ext
+            #------------------MOUNTS CONFIG MAPS------------------
+          ports:
+            - name: pop3-unenc
+              containerPort: 110
+              protocol: TCP
+              #hostPort: 110
+            - name: pop3-enc
+              containerPort: 995
+              protocol: TCP
+              #hostPort: 995
+            - name: imap-unenc
+              containerPort: 143
+              protocol: TCP
+              #hostPort: 143
+            - name: imap-enc
+              containerPort: 993
+              protocol: TCP
+              #hostPort: 993
+            #- name: smtp
+            #  containerPort: 587
+            #  protocol: TCP
+              #hostPort: 587
+            - name: lmtp
+              containerPort: 24
+              protocol: TCP
+              #hostPort: 24
+            - name: sasl-auth
+              containerPort: 13050
+              protocol: TCP
+      volumes:
+        #- name: dhpem
+        #  emptyDir: {}
+        - name: dhpem
+          secret:
+            secretName: dhparam
+        - name: tls-secret
+          secret:
+            secretName: tls-secret
+        - name: storage #the name is straight from the volumeClaimTemplate
+          persistentVolumeClaim:
+            claimName: storage
+        - name: tz-edmonton
+          hostPath:
+            path: /usr/share/zoneinfo/America/Edmonton
+        #---------------- LSYNC CONFIG MAPS   --------------------
+        - name: basicconfig
+          configMap:
+            name: basicconfig
+        - name: updconf
+          configMap:
+            name: updconf
+        - name: modconf
+          emptyDir: {}
+        - name: keyex
+          persistentVolumeClaim:
+            claimName: keyexchange
+        #---------------- DOVECOT CONFIG MAPS --------------------
+        - name: dovecot-conf
+          configMap:
+            name: dovecot-conf
+        - name: dovecot-dict-auth-conf-ext
+          configMap:
+            name: dovecot-dict-auth-conf-ext
+        - name: dovecot-dict-sql-conf-ext
+          configMap:
+            name: dovecot-dict-sql-conf-ext
+        - name: dovecot-ldap-conf-ext
+          configMap:
+            name: dovecot-ldap-conf-ext
+        - name: dovecot-oauth2-conf-ext
+          configMap:
+            name: dovecot-oauth2-conf-ext
+        - name: dovecot-openssl-cnf
+          configMap:
+            name: dovecot-openssl-cnf
+        - name: dovecot-sql-conf-ext
+          configMap:
+            name: dovecot-sql-conf-ext
+        - name: 10-auth-conf
+          configMap:
+            name: 10-auth-conf
+        - name: 10-director-conf
+          configMap:
+            name: 10-director-conf
+        - name: 10-logging-conf
+          configMap:
+            name: 10-logging-conf
+        - name: 10-mail-conf
+          configMap:
+            name: 10-mail-conf
+        - name: 10-master-conf
+          configMap:
+            name: 10-master-conf
+        - name: 10-metrics-conf
+          configMap:
+            name: 10-metrics-conf
+        - name: 10-ssl-conf
+          configMap:
+            name: 10-ssl-conf
+        - name: 15-lda-conf
+          configMap:
+            name: 15-lda-conf
+        - name: 15-mailboxes-conf
+          configMap:
+            name: 15-mailboxes-conf
+        - name: 20-imap-conf
+          configMap:
+            name: 20-imap-conf
+        - name: 20-lmtp-conf
+          configMap:
+            name: 20-lmtp-conf
+        - name: 20-managesieve-conf
+          configMap:
+            name: 20-managesieve-conf
+        - name: 20-pop3-conf
+          configMap:
+            name: 20-pop3-conf
+        - name: 20-submission-conf
+          configMap:
+            name: 20-submission-conf
+        - name: 90-acl-conf
+          configMap:
+            name: 90-acl-conf
+        - name: 90-plugin-conf
+          configMap:
+            name: 90-plugin-conf
+        - name: 90-quota-conf
+          configMap:
+            name: 90-quota-conf
+        - name: 90-sieve-conf
+          configMap:
+            name: 90-sieve-conf
+        - name: 90-sieve-extprograms-conf
+          configMap:
+            name: 90-sieve-extprograms-conf
+        #- name: auth-checkpassword-conf-ext
+        #  configMap:
+        #    name: auth-checkpassword-conf-ext
+        #- name: auth-deny-conf-ext
+        #  configMap:
+        #    name: auth-deny-conf-ext
+        - name: auth-dict-conf-ext
+          configMap:
+            name: auth-dict-conf-ext
+        #- name: auth-ldap-conf-ext
+        #  configMap:
+        #    name: auth-ldap-conf-ext
+        #- name: auth-master-conf-ext
+        #  configMap:
+        #    name: auth-master-conf-ext
+        #- name: auth-passwdfile-conf-ext
+        #  configMap:
+        #    name: auth-passwdfile-conf-ext
+        - name: auth-sql-conf-ext
+          configMap:
+            name: auth-sql-conf-ext
+        #- name: auth-static-conf-ext
+        #  configMap:
+        #    name: auth-static-conf-ext
+        #- name: auth-system-conf-ext
+        #  configMap:
+        #    name: auth-system-conf-ext
+        #-------------------------Conf Maps----------------------
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dovecot
+  namespace: mailserver
+spec:
+  selector:
+    app: dovecot
+    #role: dovecot
+  ports:
+    #- name: pop3-unenc
+    #  port: 110
+    #  targetPort: 110
+    #  protocol: TCP
+    #- name: pop3-enc
+    #  port: 995
+    #  targetPort: 995
+    #  protocol: TCP
+    - name: imap-unenc
+      port: 143
+      targetPort: 143
+      protocol: TCP
+    - name: imap-enc
+      port: 993
+      targetPort: 993
+      protocol: TCP
+    #- name: smtp
+    #  port: 587
+    #  targetPort: 587
+    #  protocol: TCP
+    #- name: lmtp
+    #  port: 24
+    #  targetPort: 24
+    #  protocol: TCP
+---
+#I don't need a service for the sync
+#that is automatically done through the
+#pods themselves which is setup through the
+#names in the LUA file on startup.
+#kind: Service
+#apiVersion: v1
+#metadata:
+#  name: lsyncd
+#  namespace: mailserver
+#spec:
+#  selector:
+#    app: dovecot
+#  ports:
+  #- name: syncport
+  #  port: 9900
+  #  protocol: TCP
+  #  targetPort: 9900
+#  - name: ssh
+#    port: 22
+#    protocol: TCP
+#    targetPort: 22
+#  selector:
+#    app: lsync
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: lmtp
+  namespace: mailserver
+spec:
+  selector:
+    app: dovecot
+  ports:
+  - name: lmtp
+    port: 24
+    protocol: TCP
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: sasl-auth
+  namespace: mailserver
+spec:
+  selector:
+    app: dovecot
+  ports:
+  - name: sasl-auth
+    port: 13050
+    protocol: TCP
